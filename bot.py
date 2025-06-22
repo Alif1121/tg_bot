@@ -1,12 +1,14 @@
 from flask import Flask, request
-from telegram import Update, Bot, Poll
-from telegram.ext import Dispatcher, CommandHandler, MessageHandler, filters
+from telegram import Update, Poll, Bot
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+import os
+import asyncio
 
 TOKEN = "YOUR_BOT_TOKEN_HERE"
-bot = Bot(token=TOKEN)
 app = Flask(__name__)
 
-dispatcher = Dispatcher(bot, None, workers=0)
+# Bot and Application instance globally (create application once)
+application = ApplicationBuilder().token(TOKEN).build()
 
 def parse_full_format(text):
     lines = text.strip().split("\n")
@@ -20,6 +22,7 @@ def parse_full_format(text):
         elif line.startswith("ব্যাখা -"):
             explanation = line.replace("ব্যাখা -", "").strip()
         elif line.strip() and line[0].isdigit() and "." in line:
+            # Option line like "১. Option text"
             options.append(line.split(". ", 1)[1])
         elif line.startswith("উত্তর -"):
             try:
@@ -31,8 +34,9 @@ def parse_full_format(text):
     else:
         return None, None, None, None
 
-def start(update, context):
-    update.message.reply_text(
+# async handlers according to v20+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
         "👋 কুইজ পাঠাতে চাইলে এই ফরম্যাটে পাঠাও:\n\n"
         "প্রশ্ন - প্রশ্ন লিখো\n"
         "ব্যাখা - ব্যাখ্যা লিখো (ঐচ্ছিক)\n"
@@ -51,11 +55,11 @@ def start(update, context):
         "উত্তর - ২"
     )
 
-def quiz_handler(update, context):
+async def quiz_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     question, options, correct_index, explanation = parse_full_format(text)
     if question and options and correct_index is not None:
-        context.bot.send_poll(
+        await context.bot.send_poll(
             chat_id=update.effective_chat.id,
             question=question,
             options=options,
@@ -63,19 +67,22 @@ def quiz_handler(update, context):
             correct_option_id=correct_index,
             is_anonymous=False,
         )
-        update.message.reply_text(
+        await update.message.reply_text(
             f"✅ সঠিক উত্তর: {correct_index + 1}. {options[correct_index]}\n📘 ব্যাখা: {explanation if explanation else 'প্রদান করা হয়নি।'}"
         )
     else:
-        update.message.reply_text("❌ ফরম্যাট ঠিক নয়। দয়া করে সঠিকভাবে প্রশ্ন, অপশন এবং উত্তর দাও।")
+        await update.message.reply_text("❌ ফরম্যাট ঠিক নয়। দয়া করে সঠিকভাবে প্রশ্ন, অপশন এবং উত্তর দাও।")
 
-dispatcher.add_handler(CommandHandler("start", start))
-dispatcher.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), quiz_handler))
+# Add handlers to application
+application.add_handler(CommandHandler("start", start))
+application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), quiz_handler))
+
 
 @app.route(f"/{TOKEN}", methods=["POST"])
 def webhook():
-    update = Update.de_json(request.get_json(force=True), bot)
-    dispatcher.process_update(update)
+    json_data = request.get_json(force=True)
+    update = Update.de_json(json_data, application.bot)
+    asyncio.run(application.process_update(update))
     return "OK"
 
 @app.route("/")
@@ -83,4 +90,6 @@ def index():
     return "Bot is running!"
 
 if __name__ == "__main__":
-    app.run()
+    # Flask runs on port 5000 by default; Railway assigns PORT env var, use that in production
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
